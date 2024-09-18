@@ -13,10 +13,11 @@ library(tidyverse)
 library(tidyr)
 library(dplyr)
 library(corrplot)
+library(mgsub)
+library(schoRsch)
 ```
 ### function set up
 ```{r}
-# Helper function to replace substring in a string
 substr_replace <- function(x, replacement, start, end) {
   substr(x, start, end) <- replacement
   return(x)
@@ -26,6 +27,11 @@ substr_replace <- function(x, replacement, start, end) {
 replace_every_other_period <- function(x) {
   # Find all periods
   periods <- gregexpr("\\.", x)[[1]]
+  
+  # Check if there are at least two periods
+  if (length(periods) < 2) {
+    return(x)  # No second period, return the original string
+  }
   
   # Determine which periods to replace (every other one starting with the 2nd)
   replace_indices <- periods[seq(2, length(periods), by = 2)]
@@ -41,45 +47,66 @@ replace_every_other_period <- function(x) {
 
 ### filepaths
 ```{r}
-flow_jo_export_filepath <- "exports/K037_Panel_C_V1.csv"
-clusters_filepath <- "exports/clusters.txt"
 job_queue_fp <- "exports/test_queue.csv"
 job_queue <- read.csv(job_queue_fp, header = F)
 job_queue <- job_queue[[1]]
+cluster_queue_fp <- "exports/test_queue_clusters.csv"
+cluster_queue <- read.csv(cluster_queue_fp, header = F)
+cluster_queue <- cluster_queue[[1]]
 ```
 
 ```{r}
+chisq_sig_clusters_list <- list()
+chisq_results_list <- list()
+std_residuals_list <- list()
 for ( job in seq_along(job_queue)){
-  
 
-  table1 <- read.csv(job_queue[job], header = F)
+  table1 <- read.csv(job_queue[job], header =F ) %>% select(where(~!all(is.na(.))))
   name <- table1$X[1]
+  #Cleans headers from Flowjo, removes "-" from INF-Y, converts CFSE values -1 and -2
+  #into 11 and 22 respectively, removes any other "negative" cluster associations
+  #Then converts names to column headers with "." separators for function above
+  table1[1,] <- gsub(" \\| Freq\\. of Parent.*","",table1[1,]) %>% 
+    gsub(".*\\( ","",.) %>% gsub(" )","",.) %>% 
+    gsub("\\+",".",.) %>% gsub("\\ ",".",.) %>% gsub("INF-Y","INFY",.) %>%
+    gsub("CFSE\\.\\d\\.?","",.) %>% gsub("CFSE-1","CFSE.11",.) %>%
+    gsub("CFSE-\\d","CFSE.22",.) %>% gsub("\\w+-\\d+\\.","",.)
+    
+  
+  columns_with_count <- which(apply(table1, 2, function(col) any(grepl("Count", col))))
+  count <- table1[,columns_with_count]
+  count <- count[(job+1)]
+  count <- as.numeric(count)
 
+  table1 <- table1[, -columns_with_count]
+  cluster_names <- table1[1,]
+  cluster_names <- cluster_names[-1]
+  columns_with_HHV6 <- which(apply(cluster_names, 2, function(col) any(grepl("HHV6", col))))
+  columns_with_CMV <- which(apply(cluster_names, 2, function(col) any(grepl("CMV", col))))
+  table1 <- table1[(job+1),]
+  try(table1 <- subset(table1, select = -X.1), silent = T)
+  table1 <- table1[,-1]
+
+  # colnames(table1) <- gsub("\\.*Freq\\.\\.of\\.Parent\\.\\.\\.\\.","",colnames(table1))
 
   #removes import artifact of last row all NAs and grabs just 1st row from flowjo
-  count <- table1$Count
-  count <- count[1]
-  table1 <- table1[job,] %>% subset(., select = -Count)
-  try(table1 <- subset(table1, select = -X.1), silent = T)
-  table1 <- subset(table1, select = -X)
 
-  #clean column names 1st pass; extracts count and removes column
-  colnames(table1) <- gsub("\\.*Freq\\.\\.of\\.Parent\\.\\.\\.\\.","",colnames(table1))
 
- 
   #converts percentages into raw counts
+  table1 <- as.data.frame(lapply(table1, as.numeric))
   raw_counts_tbl <- table1 %>% mutate_all(~.*0.01*count)
   raw_cluster_tbl <- t(ceiling(raw_counts_tbl[,3:length(raw_counts_tbl)]))
  
   #clean columns names 2nd pass; creates dataframe with just membership for each cluster
-  cluster_names <- gsub("^[^_]*_[^_]*_", "", rownames(raw_cluster_tbl))
-  cluster_names <- gsub(".*?\\.\\.\\.\\.", "",cluster_names)
+  # cluster_names <- gsub("^[^_]*_[^_]*_", "", rownames(raw_cluster_tbl))
+  # cluster_names <- gsub(".*?\\.\\.\\.\\.", "",cluster_names)
+  cluster_names <- cluster_names[,c(-columns_with_CMV,-columns_with_HHV6)]
   cluster_names <- sapply(cluster_names, replace_every_other_period)
   cluster_names_df <- as.data.frame(cluster_names)
 
   #reads in cluster explorer data, grabs just HHV6 and CMV membership % and converts
   #to count instead of % as chi^2 requires raw counts.
-  table2 <- read.csv(clusters_filepath, skip=1)
+  table2 <- read.csv(cluster_queue[job], skip=1)
   clusters_pct <- table2[, (ncol(table2) - 1):ncol(table2)] %>%
     mutate_all((~.*0.01))
   disease_cluster_count <- ceiling(sweep(clusters_pct, 1, raw_cluster_tbl, '*'))
@@ -92,8 +119,10 @@ for ( job in seq_along(job_queue)){
   
   factors <- unique(unlist(lapply(new_list, function(lst) sapply(lst, function(x) strsplit(x, "\\.")[[1]][1]))))
   
-  visit_df <- data.frame(matrix(NA, nrow = length(new_list), ncol = length(factors)))
-  factors <- factors[-8]
+  visit_df <- data.frame(matrix(NA, nrow = length(new_list), 
+                                ncol = length(factors)))
+  #CHECK HERE TO MAKE SURE NOTHING SLIPPED THROUGH THE GSUB FILTERS
+  #FACTORS SHOULD ALWAYS = 7
   colnames(visit_df) <- factors
 
   for (i in seq_along(new_list)) {
@@ -118,9 +147,20 @@ for ( job in seq_along(job_queue)){
   
   #run chi^2 and print results
   chi2_results <- chisq.test(contingency_table)
-  print(chi2_results)
+  chisq_results_list[[length(chisq_results_list) +1]] <- chi2_results
   std_residuals <- chi2_results$stdres
-  print(std_residuals)
+  std_residuals_list[[length(std_residuals_list) +1]] <- std_residuals
+  cmv_significant_clusters <- which(std_residuals[1,] >= 4)
+  hhv6_significant_clusters <- which(std_residuals[2,] >= 4)
+  corrplot(t(chi2_results$stdres), is.cor = F, cl.pos = "b", cl.length = 2, insig = "blank")
+
+  HHV6_clusters_df <- visit_df[hhv6_significant_clusters,] %>% rbind(.,colSums(.))
+  rownames(HHV6_clusters_df)[nrow(HHV6_clusters_df)] <- "Total"
+
+  CMV_clusters_df <- visit_df[cmv_significant_clusters,] %>% rbind(.,colSums(.))
+  rownames(CMV_clusters_df)[nrow(CMV_clusters_df)] <- "Total"
+  chisq_sig_clusters_list[[length(chisq_sig_clusters_list) + 1]] <- HHV6_clusters_df
+  chisq_sig_clusters_list[[length(chisq_sig_clusters_list) + 1]] <- CMV_clusters_df
 }
 
 ```
@@ -128,50 +168,86 @@ for ( job in seq_along(job_queue)){
 
 ## Chi^2 analysis and significant clusters {.tabset}
 ```{r, results='asis'}
-c <- 0
-for (i in 1:10){
-c <- c + 1
-cat('\n')
-cat("### tab number", c, "\n")
-print("Hello world \n")
-cat("\n")
+
+visit_num <- c("1","3","7","8")
+labels_plots <- c("HHV6","CMV")
+
+#counter for internal J loop
+x <- -1
+
+#generate objects for finding max of CMV/HHV6 graph pairs
+maxes <- list()
+first_max <- 0
+second_max <- 0
+for (q in seq_along(chisq_sig_clusters_list)){
+  if (q %% 2 == 0){
+    first_max <- max(chisq_sig_clusters_list[[q]])
+  } else {
+    second_max <- max(chisq_sig_clusters_list[[q]])
+    maxes <- append(maxes, max(first_max, second_max))
+  }
+}
+
+#generate R Markdown tabs for each visit with Chi Squared results, graphs,
+#and printed notice if no clusters' standard residuals are > 4
+for (i in seq_along(chisq_results_list)){
+  cat('\n')
+  cat("### Visit ", visit_num[i], "\n")
+  print(chi_out(chisq_results_list[[i]]))
+  cat("\n")
+  for (j in 1:2){
+    t1 <- t(chisq_sig_clusters_list[[j+x+i]])
+    if ( sum(t1) > 0){
+      barplot(t1[,ncol(t1)], main = labels_plots[j], ylim = c(0,maxes[[i]]))
+    } else {
+      print(paste0("no significant clusters found for ", labels_plots[j]))
+      cat("\n")
+    }
+  }
+  x<- x + 1
+  cat("\n")
 }
 ```
 
 ##  Break
 ```{r}
-#generate contingency table from disease cluster counts
-contingency_table <- t(disease_cluster_count)
-
-#run chi^2 and print results
-chi2_results <- chisq.test(contingency_table)
-print(chi2_results)
-std_residuals <- chi2_results$stdres
-print(std_residuals)
+# #generate contingency table from disease cluster counts
+# contingency_table <- t(disease_cluster_count)
+# 
+# #run chi^2 and print results
+# chi2_results <- chisq.test(contingency_table)
+# print(chi2_results)
+# std_residuals <- chi2_results$stdres
+# print(std_residuals)
 ```
 
 ```{r}
 #generate vectors of which clusters are >= 3 Pearson's standard residuals
 #2 is P-value of <0.45 and 3 is P-Value of <0.0026 (read more on this before making assumption;
 #IE is this a standardized pearson residual or not?)
-cmv_significant_clusters <- which(std_residuals[1,] >= 4)
-hhv6_significant_clusters <- which(std_residuals[2,] >= 4)
-corrplot(t(chi2_results$stdres), is.cor = F, cl.pos = "b", cl.length = 2, insig = "blank")
-
-HHV6_clusters_df <- visit_df[hhv6_significant_clusters,] %>% rbind(.,colSums(.))
-rownames(HHV6_clusters_df)[nrow(HHV6_clusters_df)] <- "Total"
-
-CMV_clusters_df <- visit_df[cmv_significant_clusters,] %>% rbind(.,colSums(.))
-rownames(CMV_clusters_df)[nrow(CMV_clusters_df)] <- "Total"
-
-
-
+# cmv_significant_clusters <- which(std_residuals[1,] >= 4)
+# hhv6_significant_clusters <- which(std_residuals[2,] >= 4)
+# corrplot(t(chi2_results$stdres), is.cor = F, cl.pos = "b", cl.length = 2, insig = "blank")
+# 
+# HHV6_clusters_df <- visit_df[hhv6_significant_clusters,] %>% rbind(.,colSums(.))
+# rownames(HHV6_clusters_df)[nrow(HHV6_clusters_df)] <- "Total"
+# 
+# CMV_clusters_df <- visit_df[cmv_significant_clusters,] %>% rbind(.,colSums(.))
+# rownames(CMV_clusters_df)[nrow(CMV_clusters_df)] <- "Total"
+# 
+# 
+# 
 tcmv <- t(CMV_clusters_df)
 thhv6 <- t(HHV6_clusters_df)
 
 par(mfrow = c(1,2))
-barplot(tcmv[,6], main = "CMV Cluster Totals", ylim = c(0,20))
+barplot(tcmv[,ncol(tcmv)], main = "CMV Cluster Totals", ylim = c(0,20))
 barplot(thhv6[,ncol(thhv6)], main = "HHV6 Cluster Totals")
+for (i in seq_along(cluster_queue)){
+  paste0("test",i)
+}
+t1 <- t(chisq_sig_clusters_list[[1]])
+t1
 
 
 ```
