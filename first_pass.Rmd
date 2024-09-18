@@ -237,17 +237,17 @@ for (i in seq_along(chisq_results_list)){
 # 
 # 
 # 
-tcmv <- t(CMV_clusters_df)
-thhv6 <- t(HHV6_clusters_df)
-
-par(mfrow = c(1,2))
-barplot(tcmv[,ncol(tcmv)], main = "CMV Cluster Totals", ylim = c(0,20))
-barplot(thhv6[,ncol(thhv6)], main = "HHV6 Cluster Totals")
-for (i in seq_along(cluster_queue)){
-  paste0("test",i)
-}
-t1 <- t(chisq_sig_clusters_list[[1]])
-t1
+# tcmv <- t(CMV_clusters_df)
+# thhv6 <- t(HHV6_clusters_df)
+# 
+# par(mfrow = c(1,2))
+# barplot(tcmv[,ncol(tcmv)], main = "CMV Cluster Totals", ylim = c(0,20))
+# barplot(thhv6[,ncol(thhv6)], main = "HHV6 Cluster Totals")
+# for (i in seq_along(cluster_queue)){
+#   paste0("test",i)
+# }
+# t1 <- t(chisq_sig_clusters_list[[1]])
+# t1
 
 
 ```
