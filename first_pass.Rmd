@@ -1,0 +1,177 @@
+---
+title: "first_pass"
+author: "SLammi"
+date: "11SEP24"
+output:
+  html_document: default
+  word_document: default
+  pdf_document: default
+---
+### library imports
+```{r}
+library(tidyverse)
+library(tidyr)
+library(dplyr)
+library(corrplot)
+```
+### function set up
+```{r}
+# Helper function to replace substring in a string
+substr_replace <- function(x, replacement, start, end) {
+  substr(x, start, end) <- replacement
+  return(x)
+}
+
+# Function to replace every other period with an underscore, starting from the 2nd period
+replace_every_other_period <- function(x) {
+  # Find all periods
+  periods <- gregexpr("\\.", x)[[1]]
+  
+  # Determine which periods to replace (every other one starting with the 2nd)
+  replace_indices <- periods[seq(2, length(periods), by = 2)]
+  
+  # Replace selected periods with "_"
+  for (i in replace_indices) {
+    x <- substr_replace(x, "_", i, i)
+  }
+  
+  return(x)
+}
+```
+
+### filepaths
+```{r}
+flow_jo_export_filepath <- "exports/K037_Panel_C_V1.csv"
+clusters_filepath <- "exports/clusters.txt"
+job_queue_fp <- "exports/test_queue.csv"
+job_queue <- read.csv(job_queue_fp, header = F)
+job_queue <- job_queue[[1]]
+```
+
+```{r}
+for ( job in seq_along(job_queue)){
+  
+
+  table1 <- read.csv(job_queue[job], header = F)
+  name <- table1$X[1]
+
+
+  #removes import artifact of last row all NAs and grabs just 1st row from flowjo
+  count <- table1$Count
+  count <- count[1]
+  table1 <- table1[job,] %>% subset(., select = -Count)
+  try(table1 <- subset(table1, select = -X.1), silent = T)
+  table1 <- subset(table1, select = -X)
+
+  #clean column names 1st pass; extracts count and removes column
+  colnames(table1) <- gsub("\\.*Freq\\.\\.of\\.Parent\\.\\.\\.\\.","",colnames(table1))
+
+ 
+  #converts percentages into raw counts
+  raw_counts_tbl <- table1 %>% mutate_all(~.*0.01*count)
+  raw_cluster_tbl <- t(ceiling(raw_counts_tbl[,3:length(raw_counts_tbl)]))
+ 
+  #clean columns names 2nd pass; creates dataframe with just membership for each cluster
+  cluster_names <- gsub("^[^_]*_[^_]*_", "", rownames(raw_cluster_tbl))
+  cluster_names <- gsub(".*?\\.\\.\\.\\.", "",cluster_names)
+  cluster_names <- sapply(cluster_names, replace_every_other_period)
+  cluster_names_df <- as.data.frame(cluster_names)
+
+  #reads in cluster explorer data, grabs just HHV6 and CMV membership % and converts
+  #to count instead of % as chi^2 requires raw counts.
+  table2 <- read.csv(clusters_filepath, skip=1)
+  clusters_pct <- table2[, (ncol(table2) - 1):ncol(table2)] %>%
+    mutate_all((~.*0.01))
+  disease_cluster_count <- ceiling(sweep(clusters_pct, 1, raw_cluster_tbl, '*'))
+
+
+  new_list <- list()
+  for (i in 1:length(cluster_names_df[,1])){
+    new_list[i] <- strsplit(cluster_names_df[i,1],"_")
+  }
+  
+  factors <- unique(unlist(lapply(new_list, function(lst) sapply(lst, function(x) strsplit(x, "\\.")[[1]][1]))))
+  
+  visit_df <- data.frame(matrix(NA, nrow = length(new_list), ncol = length(factors)))
+  factors <- factors[-8]
+  colnames(visit_df) <- factors
+
+  for (i in seq_along(new_list)) {
+    for (j in seq_along(new_list[[i]])) {
+      # Split the string into the factor and integer parts
+      split_str <- strsplit(new_list[[i]][[j]], "\\.")[[1]]
+      char <- split_str[1]  # The factor (column name)
+      value <- as.integer(split_str[2])  # The integer part after "."
+      
+      # Add the value into the appropriate column for the current row
+      visit_df[i, char] <- value
+    }
+  }
+  visit_df[is.na(visit_df)] <- 0
+  
+  visit_df <- visit_df[,c(-8,-9)]
+  
+  sum_row <- colSums(visit_df, na.rm = T)
+
+  #generate contingency table from disease cluster counts
+  contingency_table <- t(disease_cluster_count)
+  
+  #run chi^2 and print results
+  chi2_results <- chisq.test(contingency_table)
+  print(chi2_results)
+  std_residuals <- chi2_results$stdres
+  print(std_residuals)
+}
+
+```
+
+
+## Chi^2 analysis and significant clusters {.tabset}
+```{r, results='asis'}
+c <- 0
+for (i in 1:10){
+c <- c + 1
+cat('\n')
+cat("### tab number", c, "\n")
+print("Hello world \n")
+cat("\n")
+}
+```
+
+##  Break
+```{r}
+#generate contingency table from disease cluster counts
+contingency_table <- t(disease_cluster_count)
+
+#run chi^2 and print results
+chi2_results <- chisq.test(contingency_table)
+print(chi2_results)
+std_residuals <- chi2_results$stdres
+print(std_residuals)
+```
+
+```{r}
+#generate vectors of which clusters are >= 3 Pearson's standard residuals
+#2 is P-value of <0.45 and 3 is P-Value of <0.0026 (read more on this before making assumption;
+#IE is this a standardized pearson residual or not?)
+cmv_significant_clusters <- which(std_residuals[1,] >= 4)
+hhv6_significant_clusters <- which(std_residuals[2,] >= 4)
+corrplot(t(chi2_results$stdres), is.cor = F, cl.pos = "b", cl.length = 2, insig = "blank")
+
+HHV6_clusters_df <- visit_df[hhv6_significant_clusters,] %>% rbind(.,colSums(.))
+rownames(HHV6_clusters_df)[nrow(HHV6_clusters_df)] <- "Total"
+
+CMV_clusters_df <- visit_df[cmv_significant_clusters,] %>% rbind(.,colSums(.))
+rownames(CMV_clusters_df)[nrow(CMV_clusters_df)] <- "Total"
+
+
+
+tcmv <- t(CMV_clusters_df)
+thhv6 <- t(HHV6_clusters_df)
+
+par(mfrow = c(1,2))
+barplot(tcmv[,6], main = "CMV Cluster Totals", ylim = c(0,20))
+barplot(thhv6[,ncol(thhv6)], main = "HHV6 Cluster Totals")
+
+
+```
